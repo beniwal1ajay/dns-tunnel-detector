@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.pkl
+*.joblib
+data/
+out/
+*.db
+*.sqlite
+.DS_Store
+.env
