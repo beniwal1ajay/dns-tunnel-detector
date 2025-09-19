@@ -8,6 +8,17 @@ Outputs JSON lines with detection score and features.
 """
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
+# When running this script directly (python scripts/run_sniffer.py) the package
+# imports like `from src.dns_tunnel_detector...` may fail because the project root
+# is not on sys.path. Ensure the project root is inserted.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import argparse
 import json
 import sys
