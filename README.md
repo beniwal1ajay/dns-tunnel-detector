@@ -39,3 +39,26 @@ Next steps
 - Replace heuristic scoring with a trained ML model
 - Add packet capture replay support (pcap input)
 - Improve feature set (byte-entropy, n-gram model, temporal features)
+
+
+Linux notes (Debian/Ubuntu)
+---------------------------
+To run live sniffing on Linux you typically need libpcap development headers and root privileges. On Debian/Ubuntu install system deps:
+
+```bash
+sudo apt update
+sudo apt install build-essential libpcap-dev python3-dev
+# optional: if using virtualenv, create and activate it, then:
+pip install -r requirements.txt
+```
+
+If you prefer not to run as root for packet capture, you can allow the Python interpreter to capture packets by granting the binary `CAP_NET_RAW` and `CAP_NET_ADMIN` capabilities (use with care):
+
+```bash
+# if using system python, use the path to your python binary
+sudo setcap 'cap_net_raw,cap_net_admin+eip' $(which python3)
+# if using a virtualenv, point to the virtualenv python binary
+sudo setcap 'cap_net_raw,cap_net_admin+eip' /path/to/venv/bin/python
+```
+
+Note: cap adjustments require root and may be refused by some hardened systems. Otherwise run with `sudo`.

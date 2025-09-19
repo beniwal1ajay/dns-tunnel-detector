@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """CLI runner for DNS tunneling detector.
 
 Usage:
