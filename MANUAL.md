@@ -26,6 +26,13 @@ Table of contents
   - Windows-specific notes (not primary target)
 - Advanced deployment notes
 - FAQ / common questions
+ - Full CLI reference (flags and meanings)
+ - Use-case recipes (live sensor, forensic, batch, SIEM integration, model training)
+ - Systemd installation & install script
+ - Webhook/SIEM example (Splunk HEC, generic HTTP)
+ - Log management and rotation
+ - How to update on another machine (pulling changes and tests)
+ - Privacy, data retention, and security notes
 
 Quick summary
 This project is a modular DNS-tunneling detection tool written in Python 3. Features include:
@@ -207,6 +214,243 @@ Solution:
 Advanced deployment notes
 - CI: add GitHub Actions to run tests and linting on push (I can add this if you want).
 - Packaging: to avoid `sys.path` workarounds, add a `pyproject.toml` and install the package into the venv with `pip install -e .` so CLI scripts work without path hacks.
+
+Full CLI reference (flags and meanings)
+------------------------------------
+This is the authoritative list of flags supported by `scripts/run_sniffer.py` (and the same options are available via the top-level wrapper when applicable):
+
+- `--iface IFACE` : Network interface to listen on (live sniffing). Example: `--iface wlan0`.
+- `--threshold N` : Float 0..1. Detections with score >= threshold will be printed to stdout. Default `0.6`.
+- `--test` : Dry-run; print example qnames and exit.
+- `--pcap FILE` : Process a single pcap file instead of live capture.
+- `--pcap-dir DIR` : Process all pcaps in a directory; combine with `--workers` to parallelize.
+- `--recursive` : With `--pcap-dir`, recurse into subdirectories.
+- `--db PATH` : SQLite database path used to persist detections. Parent orchestrator manages writes when workers are used.
+- `--model PATH` : Path to a `joblib`-serialized model. When available, model probability is used for final score.
+- `--workers N` : Number of worker processes for `--pcap-dir` processing. Default: 1.
+- `--summary-csv PATH` : Append per-file and aggregate summary rows to this CSV.
+- `--verbose` : Set logging to DEBUG/INFO, useful for runtime information.
+- `--debug` : Print per-processed-qname debug info to stderr (includes qname, score, components).
+- `--print-all` : Print every processed qname as a JSON line to stdout regardless of score (useful for label collection).
+
+Use-case recipes (copy-paste)
+------------------------------
+1) Quick dry-run (no root required):
+```bash
+python3 scripts/run_sniffer.py --test
+```
+
+2) Single-host live sensor (systemd)
+```bash
+# create venv, install deps
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# ensure service dirs
+sudo useradd -r -s /usr/sbin/nologin dnsdetector || true
+sudo mkdir -p /var/lib/dns-detector /var/log/dns-detector
+sudo chown dnsdetector:dnsdetector /var/lib/dns-detector /var/log/dns-detector
+
+# grant capability to venv python (alternative to running whole service as root)
+sudo setcap cap_net_raw+ep $(readlink -f .venv/bin/python)
+
+# run manually for a sanity check
+sudo .venv/bin/python3 scripts/run_sniffer.py --iface wlan0 --db /var/lib/dns-detector/detections.db --summary-csv /var/log/dns-detector/summary.csv --threshold 0.6
+```
+
+3) As a service (systemd unit example)
+Create `/etc/systemd/system/dns-detector.service` (example below):
+```
+[Unit]
+Description=DNS Tunneling Detector
+After=network.target
+
+[Service]
+Type=simple
+User=dnsdetector
+Group=dnsdetector
+WorkingDirectory=/opt/dns-tunnel-detector
+Environment=PATH=/opt/dns-tunnel-detector/.venv/bin:/usr/bin:/bin
+ExecStart=/opt/dns-tunnel-detector/.venv/bin/python3 scripts/run_sniffer.py --iface wlan0 --db /var/lib/dns-detector/detections.db --summary-csv /var/log/dns-detector/summary.csv --threshold 0.6
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now dns-detector.service
+sudo journalctl -u dns-detector -f
+```
+
+4) Forensic workflow: capture then process
+```bash
+# capture 30 seconds of DNS traffic to pcap
+sudo timeout 30 tcpdump -i wlan0 udp port 53 -w /tmp/capture.pcap
+
+# process pcap offline (no capture privileges required)
+python3 scripts/run_sniffer.py --pcap /tmp/capture.pcap --db /tmp/detections.db --summary-csv /tmp/summary.csv --threshold 0.4
+```
+
+5) Batch processing many pcaps with workers and aggregate CSV
+```bash
+python3 scripts/run_sniffer.py --pcap-dir /data/pcaps --workers 4 --summary-csv /tmp/summary.csv --db /tmp/detections.db
+```
+
+6) Collect labeled data (low threshold or print-all)
+```bash
+# collect all processed qnames to a file for manual labeling
+python3 scripts/run_sniffer.py --pcap-dir /data/pcaps --workers 4 --print-all > all_qnames.jsonl
+```
+
+Webhook / SIEM example (posting detections)
+------------------------------------------
+This repo doesn't ship a built-in webhook sender by default, but here are two tiny examples you can use to forward detections.
+
+# Simple bash forwarder (reads JSONL, posts each line)
+```bash
+while read -r line; do
+  curl -s -X POST -H 'Content-Type: application/json' -d "$line" https://siem.example.com/ingest
+done < detections.jsonl
+```
+
+# Python example (Splunk HEC)
+```python
+import requests
+HEC_URL = 'https://splunk.example.com:8088/services/collector/event'
+HEC_TOKEN = 'REPLACE_WITH_TOKEN'
+with open('detections.jsonl') as fh:
+    for line in fh:
+        resp = requests.post(HEC_URL, headers={'Authorization': f'Splunk {HEC_TOKEN}'}, json={'event': line})
+        resp.raise_for_status()
+```
+
+Systemd install script (example `install.sh`)
+--------------------------------------------
+This script automates common installation steps (adjust paths and user names to taste). Drop it in repo root and run as root to set up the service.
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+REPO=/opt/dns-tunnel-detector
+USER=dnsdetector
+GROUP=dnsdetector
+SERVICE=/etc/systemd/system/dns-detector.service
+
+# copy code
+mkdir -p $REPO
+cp -a . $REPO
+cd $REPO
+
+# create venv
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# create user
+id -u $USER >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin $USER
+mkdir -p /var/lib/dns-detector /var/log/dns-detector
+chown -R $USER:$GROUP /var/lib/dns-detector /var/log/dns-detector || true
+
+# grant capability to venv python
+setcap cap_net_raw+ep $(readlink -f .venv/bin/python) || true
+
+# write systemd unit (adjust if necessary)
+cat > $SERVICE <<'EOF'
+[Unit]
+Description=DNS Tunneling Detector
+After=network.target
+
+[Service]
+Type=simple
+User=dnsdetector
+Group=dnsdetector
+WorkingDirectory=/opt/dns-tunnel-detector
+Environment=PATH=/opt/dns-tunnel-detector/.venv/bin:/usr/bin:/bin
+ExecStart=/opt/dns-tunnel-detector/.venv/bin/python3 scripts/run_sniffer.py --iface wlan0 --db /var/lib/dns-detector/detections.db --summary-csv /var/log/dns-detector/summary.csv --threshold 0.6
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now dns-detector.service
+echo "Installed and started dns-detector.service"
+```
+
+Log management & rotation
+-------------------------
+If you run the detector as a systemd service, logs will go to `journalctl -u dns-detector`. If your service writes files under `/var/log/dns-detector/` configure `logrotate` to rotate them:
+
+Example `/etc/logrotate.d/dns-detector`:
+```
+/var/log/dns-detector/*.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+```
+
+Saving outputs and exports
+-------------------------
+- JSONL: run with `--print-all` (all processed qnames) or collect detections stdout to a file:
+```bash
+sudo python3 scripts/run_sniffer.py --iface wlan0 --threshold 0.6 > detections.jsonl
+```
+- Debug/logs: use `--debug` and/or `--verbose` to send additional info to stderr. Keep stdout/stderr separate when saving machine-readable output.
+- SQLite export to CSV/JSON (example):
+```bash
+sqlite3 -json /var/lib/dns-detector/detections.db "SELECT * FROM detections;" > all_detections.json
+sqlite3 -header -csv /var/lib/dns-detector/detections.db "SELECT * FROM detections;" > all_detections.csv
+```
+
+How to update on another machine (pull changes & run tests)
+---------------------------------------------------------
+If you already cloned the repo on Kali or other hosts, prefer `git pull` over re-clone unless files are corrupted or root-owned.
+
+Commands to update and test:
+```bash
+cd /path/to/dns-tunnel-detector
+git fetch origin
+git checkout master
+git pull --ff-only origin master
+
+# if you use venv
+python3 -m venv .venv || true
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# run unit tests
+python3 -m pytest -q
+```
+
+Privacy, data retention and security
+----------------------------------
+- DNS qnames may contain sensitive data (identifiers, tokens). Treat detection logs as potentially sensitive.
+- Apply retention policies: purge old DB entries older than X days using cron/SQL, or archive and encrypt.
+- Secure the DB directory (`/var/lib/dns-detector`) with appropriate ownership and filesystem access controls.
+- If shipping to external SIEM, consider anonymization/redaction before sending.
+
+Appendix: advanced troubleshooting & tips
+---------------------------------------
+- If you see no JSON output, confirm `--threshold` value is appropriate (lower for debugging). Use `--print-all` to verify packet pipeline.
+- If running under containers, ensure container has `CAP_NET_RAW` or is started with `--cap-add=NET_RAW --cap-add=NET_ADMIN` and network=host if you need host interface access.
+- If SQLite writes fail under heavy load, consider switching to WAL mode by adding `PRAGMA journal_mode=WAL` to `store.init_db()`; for large-scale deployments consider central ingestion instead of local SQLite.
+
+Change history & authorship
+--------------------------------
+- This manual was generated and expanded during iterative development. Keep this file current when adding flags or behavior.
+
+-- end of MANUAL
 
 FAQ
 Q: Do I need to re-clone to get the latest updates on another machine (Kali)?
