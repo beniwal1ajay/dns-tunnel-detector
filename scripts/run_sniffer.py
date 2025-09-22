@@ -62,7 +62,7 @@ def format_output(qname: str, score: float, components: dict) -> str:
     return json.dumps(out)
 
 
-def packet_handler(packet: Any, threshold: float, db: Optional[str] = None, model=None, logger=None, stats: dict = None, debug: bool = False):
+def packet_handler(packet: Any, threshold: float, db: Optional[str] = None, model=None, logger=None, stats: dict = None, debug: bool = False, print_all: bool = False):
     if not (packet.haslayer(DNS) and packet.getlayer(DNS).qr == 0 and packet.haslayer(DNSQR)):
         return
 
@@ -92,6 +92,13 @@ def packet_handler(packet: Any, threshold: float, db: Optional[str] = None, mode
     if debug:
         try:
             print(f"[DEBUG] qname={qname} score={float(score):.6f} components={components}", file=sys.stderr)
+        except Exception:
+            pass
+
+    # If print_all is set, always print the processed qname (stdout) regardless of threshold
+    if print_all:
+        try:
+            print(format_output(qname, score, components))
         except Exception:
             pass
 
@@ -138,7 +145,7 @@ def packet_handler(packet: Any, threshold: float, db: Optional[str] = None, mode
             stats['detections'] += 1
 
 
-def process_pcap_file(pcap_path: str, threshold: float, model_path: Optional[str] = None, verbose: bool = False, debug: bool = False) -> dict:
+def process_pcap_file(pcap_path: str, threshold: float, model_path: Optional[str] = None, verbose: bool = False, debug: bool = False, print_all: bool = False) -> dict:
     """Process a single pcap file in a worker process. Returns stats dict.
 
     This function avoids DB writes; it returns stats to be merged by the parent.
@@ -185,7 +192,7 @@ def process_pcap_file(pcap_path: str, threshold: float, model_path: Optional[str
                 # update stats
                 packet_stats = {}
                 # let packet_handler logic fill stats for reuse
-                packet_handler(pkt, threshold, db=None, model=local_model, logger=None, stats=stats, debug=debug)
+                packet_handler(pkt, threshold, db=None, model=local_model, logger=None, stats=stats, debug=debug, print_all=print_all)
 
                 if score >= threshold:
                     detections.append({'qname': qname, 'score': float(score), 'components': components})
@@ -247,9 +254,13 @@ def write_summary_csv(csv_path: str, stats: dict, label: str, pcap_path: Optiona
             logger.exception('Failed to write summary CSV %s', csv_path)
 
 
-def run_sniffer(iface: str | None, threshold: float, test: bool, pcap: Optional[str] = None, db: Optional[str] = None, model_path: Optional[str] = None, verbose: bool = False, pcap_dir: Optional[str] = None, recursive: bool = False, workers: int = 1, summary_csv: Optional[str] = None, debug: bool = False):
+def run_sniffer(iface: str | None, threshold: float, test: bool, pcap: Optional[str] = None, db: Optional[str] = None, model_path: Optional[str] = None, verbose: bool = False, pcap_dir: Optional[str] = None, recursive: bool = False, workers: int = 1, summary_csv: Optional[str] = None, debug: bool = False, print_all: bool = False):
     logger = logging.getLogger('dns_sniffer')
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
+
+    # Startup info so operator knows effective configuration
+    logger.info('Starting dns-sniffer: iface=%s threshold=%.3f test=%s pcap=%s pcap_dir=%s workers=%d model=%s db=%s print_all=%s debug=%s',
+                iface, threshold, test, pcap, pcap_dir, workers, model_path, db, print_all, debug)
 
     model = None
     if model_path:
@@ -395,7 +406,7 @@ def run_sniffer(iface: str | None, threshold: float, test: bool, pcap: Optional[
             futures = {}
             with ProcessPoolExecutor(max_workers=max_workers) as ex:
                 for p in pcaps:
-                    futures[ex.submit(process_pcap_file, str(p), threshold, model_path, verbose, debug)] = p
+                    futures[ex.submit(process_pcap_file, str(p), threshold, model_path, verbose, debug, print_all)] = p
                 for fut in as_completed(futures):
                     p = futures[fut]
                     try:
@@ -516,8 +527,9 @@ def main(argv=None):
     parser.add_argument('--workers', type=int, default=1, help='Number of worker processes for parallel pcap processing')
     parser.add_argument('--summary-csv', default=None, help='Path to write per-file and aggregate summary CSV')
     parser.add_argument('--debug', action='store_true', help='Print debug info for every processed DNS query to stderr')
+    parser.add_argument('--print-all', action='store_true', help='Print every processed DNS query to stdout regardless of threshold')
     args = parser.parse_args(argv)
-    run_sniffer(args.iface, args.threshold, args.test, pcap=args.pcap, db=args.db, model_path=args.model, verbose=args.verbose, pcap_dir=args.pcap_dir, recursive=args.recursive, workers=args.workers, summary_csv=args.summary_csv, debug=args.debug)
+    run_sniffer(args.iface, args.threshold, args.test, pcap=args.pcap, db=args.db, model_path=args.model, verbose=args.verbose, pcap_dir=args.pcap_dir, recursive=args.recursive, workers=args.workers, summary_csv=args.summary_csv, debug=args.debug, print_all=args.print_all)
 
 
 def list_pcaps(directory: str, recursive: bool = False) -> List[Path]:
