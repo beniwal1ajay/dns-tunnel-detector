@@ -4,3 +4,5 @@ joblib
 pandas
 pytest
 tqdm
+requests
+
