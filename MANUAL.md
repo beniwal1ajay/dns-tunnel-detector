@@ -115,6 +115,16 @@ python3 scripts/run_sniffer.py --pcap-dir /path/to/pcaps --workers 4 --summary-c
 - Persist detections to SQLite:
 ```bash
 python3 scripts/run_sniffer.py --pcap my.pcap --db data/detections.db
+
+- Scan a single CSV file containing qnames (header `qname` / `query` / `domain` or first column):
+```bash
+python3 scripts/run_sniffer.py --csv /path/to/queries.csv --threshold 0.6
+```
+
+- Process a directory of CSVs (parallel) and write a combined summary CSV:
+```bash
+python3 scripts/run_sniffer.py --csv-dir /data/csvs --workers 4 --summary-csv /tmp/summary.csv
+```
 ```
 Notes on model usage
 - Train a model using `scripts/train_model.py` (expects labeled CSV with features and `label` column):

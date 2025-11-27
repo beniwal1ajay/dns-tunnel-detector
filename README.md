@@ -30,6 +30,23 @@ python3 scripts/run_sniffer.py --pcap /path/to/capture.pcap --threshold 0.6 --db
 
 The command prints JSON Lines to stdout for each detection (qname + score + components). Use `--summary-csv /tmp/summary.csv` to collect per-file and aggregate summaries.
 
+Process CSVs
+------------
+
+In addition to PCAPs, `run_sniffer.py` can scan CSV files containing qnames (one per row) or a directory of CSVs. Supported header names: `qname`, `query`, or `domain` — otherwise the first column is treated as the qname.
+
+Examples:
+
+- Scan a single CSV and print detections:
+	```bash
+	python3 scripts/run_sniffer.py --csv /path/to/queries.csv --threshold 0.6
+	```
+
+- Scan a directory of CSV files in parallel and write a summary CSV:
+	```bash
+	python3 scripts/run_sniffer.py --csv-dir /data/csvs --workers 4 --summary-csv /tmp/summary.csv
+	```
+
 Useful quick examples
 ---------------------
 
